@@ -193,12 +193,6 @@ class LFM2ForCausalLM(BaseForCausalLM):
     def __call__(self, *args, **kwargs):
         # Override to handle LFM2's special cache update for conv layers
         output = super().__call__(*args, **kwargs)
-        if self.config.use_paged_attention:
-            for i, state in enumerate(output.past_key_values):
-                # past_key_values is already updated by the base class logic,
-                # we just need to update the non-attention layers in our persistent cache
-                if i not in self.config.full_attn_idxs:
-                    self.layer_caches[i] = state
         return output
     
     @classmethod

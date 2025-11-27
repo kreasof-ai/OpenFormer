@@ -71,11 +71,9 @@ def run_tinygrad_test(name: str, config_overrides: dict):
     A unified function to test any tinygrad configuration using the new API.
     """
     dtype_str = str(config_overrides.get('torch_dtype', 'float32')).split('.')[-1]
-    paged_str = 'ON' if config_overrides.get('use_paged_attention', False) else 'OFF'
     quant_str = config_overrides.get('quantize', 'None')
     
     print(f"\n--- Testing: {name} ---")
-    print(f"  Config: Paged Attention={paged_str}, DType={dtype_str}, Quantization={quant_str}")
     
     model = lfm2_modeling.LFM2ForCausalLM.from_pretrained(REPO_ID, **config_overrides)
     tokenizer = model.tokenizer
@@ -115,8 +113,8 @@ if __name__ == "__main__":
     # Define the test battery using config overrides
     tests_to_run = [
         ("huggingface", run_huggingface_test, (tokenizer,)),
-        ("std_fp32", run_tinygrad_test, ("Standard tinygrad (FP32)", {"torch_dtype": "float32", "use_paged_attention": False})),
-        ("std_fp16", run_tinygrad_test, ("Standard tinygrad (FP16)", {"torch_dtype": "float16", "use_paged_attention": False})),
+        ("std_fp32", run_tinygrad_test, ("Standard tinygrad (FP32)", {"torch_dtype": "float32"})),
+        ("std_fp16", run_tinygrad_test, ("Standard tinygrad (FP16)", {"torch_dtype": "float16"})),
     ]
     
     results = {}

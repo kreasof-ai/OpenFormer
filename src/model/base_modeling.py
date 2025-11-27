@@ -21,8 +21,6 @@ from tinygrad.nn import Embedding, Linear, RMSNorm
 from tinygrad.nn.state import load_state_dict, get_parameters, get_state_dict
 
 # Project imports for shared components
-from experimental.paged_attention import PagedKVCache, PageTable
-from experimental.flash_attention import flash_attn
 from extra.lora import LoRALinear
 from extra.quantization import NF4Linear, Int8Linear
 from utils.rope import _precompute_rope_cache, apply_rotary_pos_emb
@@ -51,13 +49,6 @@ class BaseConfig(ABC):
     # --- tinygrad specific flags ---
     dtype: Any = dtypes.float32
     quantize: Optional[str] = None
-    use_paged_attention: bool = False
-    use_flash_attention: bool = False # Note: flash_attention.py is experimental
-
-    # --- Paged Attention specific fields ---
-    page_size: int = 16
-    max_batch_size: int = 8
-    num_pages: int = 2048
 
     @classmethod
     @abstractmethod
@@ -70,8 +61,7 @@ class BaseConfig(ABC):
 
 class BaseAttention:
     """
-    A standardized attention module supporting GQA, QK Norm, RoPE, and hooks for
-    paged and flash attention.
+    A standardized attention module supporting GQA, QK Norm, and RoPE
     """
     def __init__(self, config: BaseConfig, linear_class: Type = Linear):
         self.config = config
@@ -217,28 +207,14 @@ class BaseForCausalLM(ABC):
         self.lm_head = Linear(config.hidden_size, config.vocab_size, bias=False)
         if config.tie_word_embeddings: self.lm_head.weight = self.model.embed_tokens.weight
 
-        if config.use_paged_attention:
-            self.page_table = PageTable(n_pages=config.num_pages, page_size=config.page_size, max_batch_size=config.max_batch_size)
-            self.layer_caches = [PagedKVCache(page_table=self.page_table, num_heads=config.num_key_value_heads, head_dim=self.model.head_dim, dtype=config.dtype) for _ in range(config.num_hidden_layers)]
-
     @abstractmethod
     def _create_model(self, config: BaseConfig, linear_class: Type) -> BaseModel:
         raise NotImplementedError
 
     def __call__(self, input_ids: Tensor, past_states: Optional[List[Any]] = None, start_pos: int = 0, labels: Optional[Tensor] = None, output_hidden_states: bool = False, **kwargs) -> CausalLMOutputWithPast:
-        if self.config.use_paged_attention:
-            assert "batch_idx" in kwargs and "seq_lens" in kwargs, "Paged attention requires batch_idx and seq_lens"
-            _past_states = self.layer_caches
-        else:
-            _past_states = past_states
+        _past_states = past_states
 
         hidden_states, new_states, all_hidden_states = self.model(input_ids, _past_states, start_pos, output_hidden_states, **kwargs)
-        
-        if self.config.use_paged_attention:
-            # For paged attention, only attention layers use the cache object.
-            # Other layers (like LFM2's conv) might have state we need to update.
-            # This is handled by specific model implementations.
-            pass
         
         logits = self.lm_head(hidden_states)
 
@@ -248,7 +224,7 @@ class BaseForCausalLM(ABC):
 
         return CausalLMOutputWithPast(
             loss=loss, logits=logits,
-            past_key_values=new_states if not self.config.use_paged_attention else self.layer_caches,
+            past_key_values=new_states,
             hidden_states=all_hidden_states
         )
     
@@ -270,40 +246,20 @@ class BaseForCausalLM(ABC):
         Tensor.training = False
         tokens = input_ids[0].numpy().tolist()
         
-        if self.config.use_paged_attention:
-            batch_idx_int = -1
-            try:
-                # self.reset_request_state() # model-specific resets if needed
-                batch_idx_int = self.page_table.allocate()
-                batch_idx_tensor = Tensor([batch_idx_int], dtype=dtypes.int32)
-                self.page_table.reserve(batch_idx_int, len(tokens) + max_new_tokens)
-                outputs = self(Tensor([tokens]), start_pos=0, batch_idx=batch_idx_tensor, seq_lens=[len(tokens)])
-                start_pos = len(tokens)
-                
-                for _ in range(max_new_tokens):
-                    logits = outputs.logits[0, -1, :]
-                    next_token = self._sample(logits, do_sample, temperature, min_p, repetition_penalty, tokens)
-                    tokens.append(next_token)
-                    if next_token == self.tokenizer.eos_token_id: break
-                    self._decode_one_token(next_token)
-                    outputs = self(Tensor([[next_token]]), start_pos=start_pos, batch_idx=batch_idx_tensor, seq_lens=[start_pos + 1])
-                    start_pos += 1
-            finally:
-                if batch_idx_int != -1: self.page_table.erase(batch_idx_int)
-        else: # Standard generation
-            v_start_pos = UOp.variable("start_pos", 1, self.config.max_context-1)
-            past_states = [None] * len(self.model.layers)
-            outputs = self(Tensor([tokens]), past_states, start_pos=0)
-            start_pos = len(tokens)
-            for _ in range(max_new_tokens):
-                past_states = outputs.past_key_values
-                logits = outputs.logits[0, -1, :]
-                next_token = self._sample(logits, do_sample, temperature, min_p, repetition_penalty, tokens)
-                tokens.append(next_token)
-                if next_token == self.tokenizer.eos_token_id: break
-                self._decode_one_token(next_token)
-                outputs = self(Tensor([[next_token]]), past_states, start_pos=v_start_pos.bind(start_pos))
-                start_pos += 1
+        v_start_pos = UOp.variable("start_pos", 1, self.config.max_context-1)
+        past_states = [None] * len(self.model.layers)
+        outputs = self(Tensor([tokens]), past_states, start_pos=0)
+        start_pos = len(tokens)
+        for _ in range(max_new_tokens):
+            past_states = outputs.past_key_values
+            logits = outputs.logits[0, -1, :]
+            next_token = self._sample(logits, do_sample, temperature, min_p, repetition_penalty, tokens)
+            tokens.append(next_token)
+            if next_token == self.tokenizer.eos_token_id: break
+            self._decode_one_token(next_token)
+            outputs = self(Tensor([[next_token]]), past_states, start_pos=v_start_pos.bind(start_pos))
+            start_pos += 1
+        
         return Tensor([tokens], dtype=dtypes.int32)
     
     @classmethod
@@ -323,8 +279,6 @@ class BaseForCausalLM(ABC):
         torch_dtype_map = {"bfloat16": dtypes.bfloat16, "float16": dtypes.float16, "float32": dtypes.float32}
         if "torch_dtype" in kwargs: config.dtype = torch_dtype_map.get(str(kwargs["torch_dtype"]).split('.')[-1], dtypes.float32)
         if "quantize" in kwargs: config.quantize = kwargs["quantize"]
-        if "use_paged_attention" in kwargs: config.use_paged_attention = kwargs["use_paged_attention"]
-        if "use_flash_attention" in kwargs: config.use_flash_attention = kwargs["use_flash_attention"]
 
         print("\nInitializing model architecture...")
         model = cls(config)
@@ -428,7 +382,7 @@ class BaseForCausalLM(ABC):
                     for i, m in enumerate(sub_module):
                         if hasattr(m, '__dict__'):
                             modules.update(get_named_modules(m, prefix=f"{prefix}.{name}.{i}" if prefix else f"{name}.{i}"))
-                elif hasattr(sub_module, '__dict__') and not isinstance(sub_module, (Tensor, PageTable, PagedKVCache, BaseConfig)):
+                elif hasattr(sub_module, '__dict__'):
                      modules.update(get_named_modules(sub_module, prefix=f"{prefix}.{name}" if prefix else name))
             return modules
         

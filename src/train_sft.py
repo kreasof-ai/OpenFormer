@@ -109,10 +109,6 @@ def main(args):
 
     print(f"--- Starting SFT Training for {args.model_id} on {Device.DEFAULT} ---")
 
-    # 1. Load Model and Tokenizer
-    if args.use_paged_attention:
-        print("\n[Warning] Paged attention is not recommended for fixed-shape SFT and will be disabled.")
-
     if args.use_fp16:
         print("\n--- FP16 Training Enabled ---")
     else:
@@ -241,7 +237,6 @@ if __name__ == "__main__":
     parser.add_argument("--lora_target_modules", nargs='+', default=["q_proj", "k_proj", "v_proj"], help="Module names to apply LoRA to")
     # Configuration Toggles
     parser.add_argument("--use_fp16", action="store_true", help="Enable FP16 training for lower memory usage")
-    parser.add_argument("--use_paged_attention", action="store_true", help="Enable Paged Attention (Note: not recommended for fixed-shape SFT)")
     # Add quantization argument to prevent errors, but it will be caught in main()
     parser.add_argument("--quantize", type=str, default=None, help="Quantization mode (not supported for SFT).")
     # Performance and Logging
