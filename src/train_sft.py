@@ -54,16 +54,16 @@ def data_generator(dataset, tokenizer, max_length, batch_size):
         messages = [{"role": "user" if turn.get("from") == "human" else "assistant", "content": turn.get("value", "")} for turn in conversation]
         if not messages or messages[-1]["role"] != "assistant": continue
 
-        full_text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+        full_text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False, return_dict=False)
         prompt_messages = messages[:-1]
-        prompt_text = tokenizer.apply_chat_template(prompt_messages, tokenize=False, add_generation_prompt=True)
+        prompt_text = tokenizer.apply_chat_template(prompt_messages, tokenize=False, add_generation_prompt=True, return_dict=False)
 
         buffer_full_texts.append(full_text)
         buffer_prompts.append(prompt_text)
 
         if len(buffer_full_texts) == batch_size:
-            full_tokenized = tokenizer(buffer_full_texts, max_length=max_length, padding="max_length", truncation=True, return_tensors=None)
-            prompt_tokenized = tokenizer(buffer_prompts, max_length=max_length, truncation=True, return_tensors=None)
+            full_tokenized = tokenizer(buffer_full_texts, max_length=max_length, padding="max_length", truncation=True, return_tensors=None, return_dict=False)
+            prompt_tokenized = tokenizer(buffer_prompts, max_length=max_length, truncation=True, return_tensors=None, return_dict=False)
             
             input_ids_batch = full_tokenized['input_ids']
             labels_batch = []

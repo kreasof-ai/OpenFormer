@@ -40,6 +40,7 @@ if __name__ == "__main__":
         add_generation_prompt=True,
         return_tensors=None,
         tokenize=True,
+        return_dict=False,
     )
     input_ids = Tensor([input_ids_list], dtype=dtypes.int32)
 
